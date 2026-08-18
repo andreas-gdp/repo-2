@@ -1,0 +1,48 @@
+name: Sync Delivery Metrics
+
+on:
+  push:
+    branches: ["**"]
+  issues:
+    types: [opened, edited, deleted, transferred, pinned, unpinned, closed, reopened, assigned, unassigned, labeled, unlabeled, locked, unlocked, milestoned, demilestoned]
+  pull_request:
+    types: [assigned, unassigned, labeled, unlabeled, opened, edited, closed, reopened, synchronize, ready_for_review, converted_to_draft, locked, unlocked, review_requested, review_request_removed, auto_merge_enabled, auto_merge_disabled]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+concurrency:
+  group: sync-delivery-metrics-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install "requests>=2.31" "psycopg[binary]>=3.1"
+
+      - name: Sync metrics to Neon
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          DATABASE_URL: ${{ secrets.NEON_DATABASE_URL }}
+        run: python scripts/sync_repo_metrics.py
