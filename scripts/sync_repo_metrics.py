@@ -1,3 +1,28 @@
+"""Collect delivery-health metrics from GitHub and store them in Neon Postgres.
+
+Runs standalone (e.g. inside GitHub Actions). It determines the repository from
+``GITHUB_REPOSITORY`` (set automatically by Actions), computes the current
+metrics from live GitHub issue/PR data, and inserts one row into
+``repo_metric_snapshots``, up-to-date raw issue/PR facts, and a handful of
+recent ``github_activity_events``. Facts that were previously open but are no
+longer returned by GitHub's open-item endpoints are reconciled to closed. It
+stores observations only: policy terms such as "stale" and SLA status are
+evaluated later by the agent using GLChat.
+
+Environment:
+    GITHUB_REPOSITORY        - "owner/name" (provided by GitHub Actions).
+    GITHUB_TOKEN             - token with read access to the repo.
+    GITHUB_EVENT_NAME        - triggering event (schedule/push/workflow_dispatch).
+    DATABASE_URL             - Neon Postgres connection string.
+
+Usage:
+    python scripts/sync_repo_metrics.py            # collect + write
+    python scripts/sync_repo_metrics.py --dry-run  # collect + print, no write
+
+References:
+    NONE
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -280,6 +305,12 @@ def persist(
                 metrics.open_prs,
             ),
         )
+        _reconcile_absent_open_facts(
+            cur,
+            repo_full_name=metrics.repo_full_name,
+            issue_numbers=[issue["number"] for issue in issues],
+            pr_numbers=[pr["number"] for pr in prs],
+        )
         for issue in issues:
             cur.execute(
                 """
@@ -340,6 +371,43 @@ def persist(
                 ),
             )
         conn.commit()
+
+
+def _reconcile_absent_open_facts(
+    cursor: Any,
+    *,
+    repo_full_name: str,
+    issue_numbers: list[int],
+    pr_numbers: list[int],
+) -> None:
+    """Mark stored open facts absent from a successful GitHub scan as closed.
+
+    The collector intentionally requests GitHub's open issues and pull requests
+    only. A previously stored open item missing from that successful scan can no
+    longer be presented to the agent as open. GitHub's close timestamp is not
+    available from an absent payload, so the reconciliation time is retained as
+    the best available observation time.
+    """
+    cursor.execute(
+        """
+        UPDATE github_issue_facts
+        SET state = 'closed', closed_at = COALESCE(closed_at, now()), synced_at = now()
+        WHERE repo_full_name = %s
+          AND state = 'open'
+          AND NOT (issue_number = ANY(%s));
+        """,
+        (repo_full_name, issue_numbers),
+    )
+    cursor.execute(
+        """
+        UPDATE github_pull_request_facts
+        SET state = 'closed', closed_at = COALESCE(closed_at, now()), synced_at = now()
+        WHERE repo_full_name = %s
+          AND state = 'open'
+          AND NOT (pr_number = ANY(%s));
+        """,
+        (repo_full_name, pr_numbers),
+    )
 
 
 def _label_names(item: dict[str, Any]) -> list[str]:
