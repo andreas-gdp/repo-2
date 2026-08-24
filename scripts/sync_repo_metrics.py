@@ -316,17 +316,19 @@ def persist(
                 """
                 INSERT INTO github_issue_facts
                     (repo_full_name, issue_number, title, state, author, created_at, updated_at,
-                     closed_at, labels, url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     closed_at, labels, assignees, url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (repo_full_name, issue_number) DO UPDATE SET
                     title = EXCLUDED.title, state = EXCLUDED.state, author = EXCLUDED.author,
                     updated_at = EXCLUDED.updated_at, closed_at = EXCLUDED.closed_at,
-                    labels = EXCLUDED.labels, url = EXCLUDED.url, synced_at = now();
+                    labels = EXCLUDED.labels, assignees = EXCLUDED.assignees,
+                    url = EXCLUDED.url, synced_at = now();
                 """,
                 (
                     metrics.repo_full_name, issue["number"], issue.get("title", ""), issue.get("state", "open"),
                     (issue.get("user") or {}).get("login", ""), issue.get("created_at"), issue.get("updated_at"),
-                    issue.get("closed_at"), Json(_label_names(issue)), issue.get("html_url", ""),
+                    issue.get("closed_at"), Json(_label_names(issue)), Json(_assignee_logins(issue)),
+                    issue.get("html_url", ""),
                 ),
             )
         for pr in prs:
@@ -334,18 +336,19 @@ def persist(
                 """
                 INSERT INTO github_pull_request_facts
                     (repo_full_name, pr_number, title, state, is_draft, author, created_at, updated_at,
-                     merged_at, closed_at, labels, url)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     merged_at, closed_at, labels, assignees, url)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (repo_full_name, pr_number) DO UPDATE SET
                     title = EXCLUDED.title, state = EXCLUDED.state, is_draft = EXCLUDED.is_draft,
                     author = EXCLUDED.author, updated_at = EXCLUDED.updated_at, merged_at = EXCLUDED.merged_at,
-                    closed_at = EXCLUDED.closed_at, labels = EXCLUDED.labels, url = EXCLUDED.url, synced_at = now();
+                    closed_at = EXCLUDED.closed_at, labels = EXCLUDED.labels,
+                    assignees = EXCLUDED.assignees, url = EXCLUDED.url, synced_at = now();
                 """,
                 (
                     metrics.repo_full_name, pr["number"], pr.get("title", ""), pr.get("state", "open"),
                     bool(pr.get("draft", False)), (pr.get("user") or {}).get("login", ""), pr.get("created_at"),
                     pr.get("updated_at"), pr.get("merged_at"), pr.get("closed_at"), Json(_label_names(pr)),
-                    pr.get("html_url", ""),
+                    Json(_assignee_logins(pr)), pr.get("html_url", ""),
                 ),
             )
         for e in events:
@@ -420,6 +423,17 @@ def _label_names(item: dict[str, Any]) -> list[str]:
         list[str]: Lowercase label names.
     """
     return [(label.get("name") or "").lower() for label in item.get("labels", [])]
+
+
+def _assignee_logins(item: dict[str, Any]) -> list[str]:
+    """Return the current GitHub assignee logins for an issue or pull request."""
+    return sorted(
+        {
+            str(assignee["login"])
+            for assignee in item.get("assignees", [])
+            if isinstance(assignee, dict) and assignee.get("login")
+        }
+    )
 
 
 def main() -> None:
